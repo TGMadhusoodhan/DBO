@@ -4,9 +4,9 @@ import streamlit as st
 import psycopg2
 from datetime import date, timedelta
 
-# ——— Database connection ———
+
 DB_HOST     = os.getenv('DB_HOST', 'localhost')
-DB_PORT     = os.getenv('DB_PORT', '5432')  # Adjust port if needed
+DB_PORT     = os.getenv('DB_PORT', '5432')
 DB_NAME     = os.getenv('DB_NAME', 'DBOSchema')
 DB_USER     = os.getenv('DB_USER', 'postgres')
 DB_PASSWORD = os.getenv('DB_PASSWORD', 'tgms1402')
@@ -20,45 +20,84 @@ def get_connection():
         password=DB_PASSWORD
     )
 
-# ——— Page implementations ———
 
 def signup_page():
+
+    st.title('REAL ESTATE APPLICATION')
     st.title('Sign Up')
+
     role    = st.selectbox('Sign up as', ['Renter', 'Agent'])
     email   = st.text_input('Email')
     name    = st.text_input('Name')
     address = st.text_input('Address')
+
+    agency   = ""
+    job_title = ""
+    if role == 'Agent':
+        agency    = st.text_input('Agency')
+        job_title = st.selectbox('Job Title', ['Manager', 'Agent'])
+
     col1, col2 = st.columns(2)
     with col1:
         if st.button('Sign Up'):
-            if not email:
-                st.error('Enter an email')
+            if not email or not name or not address:
+                st.error("Name, Address and Email are required.")
                 return
-            conn = get_connection(); cur = conn.cursor()
+
+            if role == 'Agent' and (not agency or not job_title):
+                st.error("Please enter your Agency and Job Title.")
+                return
+
+            conn = get_connection()
+            cur  = conn.cursor()
+
             cur.execute(
-                "INSERT INTO Users(Name_, address, Email, UserType) VALUES (%s, %s, %s, %s) ON CONFLICT (Email) DO NOTHING",
+                """
+                INSERT INTO Users(Name_, address, Email, UserType)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (Email) DO NOTHING
+                """,
                 (name, address, email, role)
             )
+
             new_id = uuid.uuid4().hex[:8]
+
             if role == 'Renter':
                 cur.execute(
-                    "INSERT INTO Renter(RenterID, Email) VALUES (%s, %s) ON CONFLICT (RenterID) DO NOTHING",
+                    """
+                    INSERT INTO Renter(RenterID, Email)
+                    VALUES (%s, %s)
+                    ON CONFLICT (RenterID) DO NOTHING
+                    """,
                     (new_id, email)
                 )
             else:
                 cur.execute(
-                    "INSERT INTO Agent(AgentID, Email) VALUES (%s, %s) ON CONFLICT (AgentID) DO NOTHING",
-                    (new_id, email)
+                    """
+                    INSERT INTO Agent(AgentID, JobTitle, Email, AgencyName)
+                    VALUES (%s, %s, %s, %s)
+                    ON CONFLICT (AgentID) DO NOTHING
+                    """,
+                    (new_id, job_title, email, agency)
                 )
-            conn.commit(); cur.close(); conn.close()
+
+            conn.commit()
+            cur.close()
+            conn.close()
+
             st.success(f'Signed up! Your {role} ID is {new_id}')
-            st.session_state.page = 'login'; st.rerun()
+            st.session_state.page = 'login'
+            st.rerun()
+
     with col2:
         if st.button('Go to Login'):
-            st.session_state.page = 'login'; st.rerun()
+            st.session_state.page = 'login'
+            st.rerun()
+
 
 
 def login_page():
+    st.title('REAL ESTATE APPLICATION')
     st.title('Login')
     email = st.text_input('Email')
     col1, col2 = st.columns(2)
@@ -82,43 +121,52 @@ def login_page():
 def profile_page():
     st.header('Your Profile')
     current_email = st.session_state.get('email')
+    if not current_email:
+        st.error("No user logged in.")
+        return
 
-    conn, cur = get_connection(), get_connection().cursor()
-    cur.execute("SELECT Name_, address, UserType FROM Users WHERE Email = %s", (current_email,))
-    name, addr, role = cur.fetchone() or ('', '', '')
+    conn = get_connection()
+    cur  = conn.cursor()
+
+    cur.execute(
+        "SELECT Name_, address, UserType FROM Users WHERE Email = %s",
+        (current_email,)
+    )
+    row = cur.fetchone() or ('', '', '')
+    name, addr, role = row
 
     st.subheader('Account Details')
     new_email = st.text_input("Email",   value=current_email)
     new_addr  = st.text_input("Address", value=addr)
 
     if st.button('Save Changes'):
-        if new_email and new_addr:
-            # Update child table first if email changed
+        if not new_email.strip() or not new_addr.strip():
+            st.error('Email and Address cannot be empty')
+        else:
             if new_email != current_email:
                 if role == 'Renter':
-                    cur.execute("UPDATE Renter  SET Email = %s WHERE Email = %s",
-                                (new_email, current_email))
+                    cur.execute(
+                        "UPDATE Renter SET Email = %s WHERE Email = %s",
+                        (new_email, current_email)
+                    )
                 else:
-                    cur.execute("UPDATE Agent   SET Email = %s WHERE Email = %s",
-                                (new_email, current_email))
-            # Then update Users table
+                    cur.execute(
+                        "UPDATE Agent SET Email = %s WHERE Email = %s",
+                        (new_email, current_email)
+                    )
+                st.session_state.email = new_email
+
             cur.execute(
                 "UPDATE Users SET Email = %s, address = %s WHERE Email = %s",
                 (new_email, new_addr, current_email)
             )
             conn.commit()
-            st.session_state.email = new_email
-            st.success('Profile updated!')
+            st.success("Profile updated!")
             st.rerun()
-        else:
-            st.error('Email and Address cannot be empty')
 
     st.write(f"**Name:** {name}")
     st.write(f"**Role:** {role}")
-
-    # Renter-specific details
     if role == 'Renter':
-        # Fetch RenterID
         cur.execute("SELECT RenterID FROM Renter WHERE Email = %s", (st.session_state['email'],))
         renter = cur.fetchone()
         if renter:
@@ -128,7 +176,6 @@ def profile_page():
             pts = cur.fetchone(); pts = pts[0] if pts else 0
             st.write(f"**Reward Points:** {pts}")
             st.subheader('Your Bookings')
-            # fetch all bookings + property type and ID
             cur.execute("""
                 SELECT
                   b.BookID,
@@ -144,59 +191,148 @@ def profile_page():
             """, (r_id,))
             bookings = cur.fetchall()
 
-            if bookings:
-                for book_id, prop_id, prop_type, start, end, mode, cost in bookings:
-                    st.write(f"• **{book_id}**: {prop_type} ({prop_id}), {start}–{end}, {mode}, **${cost:.2f}**")
-                    # receipt button
-                    if st.button("Show Receipt", key=f"receipt_{book_id}"):
-                        st.markdown("#### Receipt Details")
-                        st.write(f"**Booking ID:** {book_id}")
-                        st.write(f"**Property ID:** {prop_id}")
-                        st.write(f"**Property Type:** {prop_type}")
-                        st.write(f"**Period:** {start} → {end}")
-                        st.write(f"**Payment Mode:** {mode}")
-                        st.write(f"**Total Cost:** ${cost:.2f}")
-                        st.write("---")
-            else:
-                st.write("No bookings yet")
-        else:
-            st.warning('No renter record found for this email')
+            for book_id, prop_id, prop_type, start, end, mode, cost in bookings:
+                st.write(
+                    f"• **{book_id}**: {prop_type} ({prop_id}), "
+                    f"{start}–{end}, {mode}, **${cost:.2f}**"
+                )
 
-    cur.close(); conn.close()
+                with st.expander(f"View Receipt for {book_id}"):
+                    st.markdown("#### Receipt Details")
+                    st.write(f"**Booking ID:** {book_id}")
+                    st.write(f"**Property ID:** {prop_id}")
+                    st.write(f"**Property Type:** {prop_type}")
+                    st.write(f"**Period:** {start} → {end}")
+                    st.write(f"**Payment Mode:** {mode}")
+                    st.write(f"**Total Cost:** ${cost:.2f}")
+                    st.write("---")
+
+                    if st.button("Cancel Booking", key=f"cancel_{book_id}"):
+                        cur.execute("DELETE FROM Booking WHERE BookID = %s", (book_id,))
+                        cur.execute("SELECT PropType FROM Property WHERE PropId = %s", (prop_id,))
+                        ptype = cur.fetchone()[0]
+                        table, col = {
+                            'VacHome': ('VacHome', 'VacHomeId'),
+                            'Houses': ('Houses', 'HouseId'),
+                            'Apartments': ('Apartments', 'AptId'),
+                            'CommBuildings': ('CommBuildings', 'BuildId'),
+                        }[ptype]
+                        cur.execute(
+                            f"UPDATE {table} SET Availablity = TRUE WHERE {col} = %s",
+                            (prop_id,)
+                        )
+                        cur.execute(
+                            "SELECT RenterID FROM Renter WHERE Email = %s",
+                            (st.session_state['email'],)
+                        )
+                        r_id = cur.fetchone()[0]
+                        cur.execute(
+                            "UPDATE Rewards "
+                            "SET Reward_Points = GREATEST(Reward_Points - 100, 0) "
+                            "WHERE R_id = %s",
+                            (r_id,)
+                        )
+                        conn.commit()
+                        st.warning(
+                            f"Your booking **{book_id}** has been cancelled. "
+                            f"A refund of **${cost:.2f}** will be processed."
+                        )
+                        cur.close()
+                        conn.close()
+                        st.rerun()
+                        return
+    if role == 'Agent':
+        cur.execute(
+            "SELECT AgentID, AgencyName FROM Agent WHERE Email = %s",
+            (current_email,)
+        )
+        agent_row = cur.fetchone()
+        if not agent_row:
+            st.error("Agent record not found.")
+        else:
+            agent_id, agency_name = agent_row
+            st.write(f"**Agent ID:** {agent_id}")
+            st.write(f"**Agency:** {agency_name}")
+            st.subheader("Properties in Your Agency")
+
+            cur.execute("""
+                    SELECT PropId, PropType, Description, City, State_
+                    FROM Property
+                    WHERE AgentID IN (
+                        SELECT AgentID FROM Agent WHERE AgencyName = %s
+                    )
+                """, (agency_name,))
+            props = cur.fetchall()
+
+            if not props:
+                st.write("No listings found for your agency.")
+            else:
+                type_map = {
+                    'VacHome': ('VacHome', 'VacHomeId'),
+                    'Houses': ('Houses', 'HouseId'),
+                    'Apartments': ('Apartments', 'AptId'),
+                    'CommBuildings': ('CommBuildings', 'BuildId'),
+                }
+                for pid, ptype, desc, city, state in props:
+                    table, col = type_map[ptype]
+                    cur.execute(
+                        f"SELECT Price, Availablity FROM {table} WHERE {col} = %s",
+                        (pid,)
+                    )
+                    price, available = cur.fetchone()
+
+                    st.markdown(f"**{pid}**: {ptype} in {city}, {state}")
+                    st.write(f"- Description: {desc}")
+                    st.write(f"- Price: ${price:.2f}")
+                    st.write(f"- Available: {'✅' if available else '❌'}")
+                    st.write("---")
+
+    cur.close()
+    conn.close()
     if st.button('Back'):
-        st.session_state.page = 'view'; st.rerun()
+        st.session_state.page = 'view'
+        st.rerun()
 
 
 def view_page():
     st.header('Available Properties')
-    search_id = st.text_input('Search by Property ID')
+
+
+
+    city_search  = st.text_input('Search by City')
+    state_search = st.text_input('Search by State')
 
     conn = get_connection()
-    cur = conn.cursor()
+    cur  = conn.cursor()
 
-    # 1) Fetch matching properties
-    if search_id:
-        cur.execute(
-            "SELECT PropId, PropType, Description, City, State_ "
-            "FROM Property WHERE PropId = %s",
-            (search_id,)
-        )
-    else:
-        cur.execute(
-            "SELECT PropId, PropType, Description, City, State_ "
-            "FROM Property"
-        )
-    props = cur.fetchall()
-    if search_id and not props:
-        st.warning(f"No property found with ID {search_id}")
-
-    # 2) Get current agent’s ID
     agent_id = None
     if st.session_state.role == 'Agent':
         cur.execute("SELECT AgentID FROM Agent WHERE Email = %s",
                     (st.session_state.email,))
         row = cur.fetchone()
         agent_id = row[0] if row else None
+
+
+    base_q = "SELECT PropId, PropType, Description, City, State_ FROM Property"
+    filters, params = [], []
+
+    if city_search.strip():
+        filters.append("City ILIKE %s")
+        params.append(f"%{city_search.strip()}%")
+    if state_search.strip():
+        filters.append("State_ ILIKE %s")
+        params.append(f"%{state_search.strip()}%")
+
+    if filters:
+        sql = base_q + " WHERE " + " AND ".join(filters)
+    else:
+        sql = base_q
+
+    cur.execute(sql, params)
+    props = cur.fetchall()
+
+    if not props:
+        st.warning("No properties match that location.")
 
     type_map = {
         'VacHome':      ('VacHome',      'VacHomeId'),
@@ -208,14 +344,13 @@ def view_page():
     for pid, ptype, desc, city, state in props:
         table, col = type_map[ptype]
 
-        # a) price & availability
+
         cur.execute(
             f"SELECT Price, Availablity FROM {table} WHERE {col} = %s",
             (pid,)
         )
         price, available = cur.fetchone()
 
-        # b) who added it
         cur.execute(
             "SELECT u.Name_, a.AgentID "
             "FROM Property p "
@@ -230,7 +365,7 @@ def view_page():
         else:
             added_by_name, added_by_id = "Unknown", None
 
-        # c) display
+
         st.subheader(f"{pid}: {ptype} in {city}, {state}")
         st.write(f"**Description:** {desc}")
         st.write(f"**Price:** ${price:.2f}")
@@ -238,15 +373,14 @@ def view_page():
         st.write(f"**Added by:** {added_by_name}"
                  + (f" (Agent ID: {added_by_id})" if added_by_id else ""))
 
-        # d) Renters can buy
+
         if st.session_state.role == 'Renter' and available:
             if st.button(f"Buy {pid}", key=f"buy_{pid}"):
                 st.session_state.selected_prop = pid
                 st.session_state.page = 'buy'
                 st.rerun()
-                return  # let Streamlit rerun
+                return
 
-        # e) Agents can edit/delete their own listings
         if st.session_state.role == 'Agent' and added_by_id == agent_id:
             edit_col, del_col = st.columns(2)
             with edit_col:
@@ -257,7 +391,6 @@ def view_page():
                     return
             with del_col:
                 if st.button("Delete", key=f"del_{pid}"):
-                    # delete child rows first
                     cur.execute(f"DELETE FROM {table} WHERE {col} = %s", (pid,))
                     cur.execute("DELETE FROM Neighbourhood WHERE PropId = %s", (pid,))
                     cur.execute("DELETE FROM Property WHERE PropId = %s",   (pid,))
@@ -266,13 +399,13 @@ def view_page():
                     st.rerun()
                     return
 
-    # Agents can also add new
+
     if st.session_state.role == 'Agent' and st.button('Add Property'):
         st.session_state.page = 'add'
         st.rerun()
         return
 
-    # navigation
+
     c1, c2 = st.columns(2)
     with c1:
         if st.button('Profile'):
@@ -298,14 +431,12 @@ def edit_page():
     conn = get_connection()
     cur = conn.cursor()
 
-    # 1) Load from Property
     cur.execute(
         "SELECT PropType, Description, City, State_ FROM Property WHERE PropId = %s",
         (pid,)
     )
     ptype, desc, city, state = cur.fetchone()
 
-    # 2) Load from subtype table
     type_map = {
         'VacHome':      ('VacHome',      'VacHomeId'),
         'Houses':       ('Houses',       'HouseId'),
@@ -317,10 +448,9 @@ def edit_page():
         f"SELECT * FROM {table} WHERE {col} = %s",
         (pid,)
     )
-    # columns are [id, NoOfRooms?, address?, SqFootage?, Price?, Availablity?, …maybe BuildingType]
+
     subtype_row = cur.fetchone()
 
-    # 3) Load neighbourhood
     cur.execute(
       "SELECT CrimeRate, NearbySchool, Hospital, Park, mart "
       "FROM Neighbourhood WHERE PropId = %s",
@@ -328,13 +458,13 @@ def edit_page():
     )
     n_row = cur.fetchone()
 
-    # 4) Show form
+
     st.header(f"Edit {ptype} {pid}")
     new_desc  = st.text_input("Description", value=desc)
     new_city  = st.text_input("City", value=city)
     new_state = st.text_input("State", value=state)
 
-    # subtype fields
+
     if ptype in ('VacHome','Houses','Apartments'):
         _, rooms, addr, sqft, price, avail, *rest = subtype_row
         rooms = int(rooms)
@@ -343,26 +473,26 @@ def edit_page():
         new_rooms = st.number_input(
             "No of Rooms",
             min_value=1,
-            value=rooms  # now an int
+            value=rooms
         )
         new_addr = st.text_input("Address", value=addr)
         new_sqft = st.number_input(
             "SqFootage",
             min_value=0.0,
-            value=sqft,  # now a float
+            value=sqft,
             format="%.2f"
         )
         new_price = st.number_input(
             "Price",
             min_value=0.0,
-            value=price,  # now a float
+            value=price,
             format="%.2f"
         )
         new_avail = st.checkbox("Available", value=avail)
         if ptype == 'Apartments':
             building_type = rest[0]
             new_btype = st.text_input("BuildingType", value=building_type)
-    else:  # CommBuildings
+    else:  #commBuildings
         _, addr, btype, sqft, price, avail = subtype_row
         new_addr  = st.text_input("Address", value=addr)
         new_btype = st.text_input("BusinessType", value=btype)
@@ -370,7 +500,7 @@ def edit_page():
         new_price = st.number_input("Price", value=float(price))
         new_avail = st.checkbox("Available", value=avail)
 
-    # neighbourhood fields
+
     crime, school, hosp, park, mart = n_row
     new_crime  = st.number_input('Crime Rate (0–99.99)', min_value=0.0, max_value=99.99, value=float(crime), format="%.2f")
     new_school = st.text_input('Nearby School', value=school)
@@ -379,13 +509,11 @@ def edit_page():
     new_mart   = st.text_input('Nearby Mart', value=mart)
 
     if st.button("Save Changes"):
-        # a) update Property
         cur.execute(
             "UPDATE Property SET Description=%s, City=%s, State_=%s WHERE PropId=%s",
             (new_desc, new_city, new_state, pid)
         )
 
-        # b) update subtype
         if ptype in ('VacHome','Houses','Apartments'):
             cols = "(NoOfRooms, address, SqFootage, Price, Availablity" + (", BuildingType)" if ptype=='Apartments' else ")")
             vals = [new_rooms, new_addr, new_sqft, new_price, new_avail]
@@ -402,7 +530,6 @@ def edit_page():
                 (new_addr, new_btype, new_sqft, new_price, new_avail, pid)
             )
 
-        # c) update neighbourhood
         cur.execute(
             "UPDATE Neighbourhood SET CrimeRate=%s, NearbySchool=%s, Hospital=%s, Park=%s, mart=%s WHERE PropId=%s",
             (new_crime, new_school, new_hosp, new_park, new_mart, pid)
@@ -437,19 +564,15 @@ def buy_page():
         cvv       = st.text_input('CVV')
 
     if st.button('Confirm Purchase'):
-        # 1) Basic props check
         if not prop_id:
             st.error("Enter a property ID")
             return
 
-        # 2) If credit, validate 16-digit numeric card number
         if mode_of_pay == 'Credit':
             if not card_no.isdigit() or len(card_no) != 16:
                 st.error("Credit card number must be exactly 16 digits")
                 return
-            # (you could also validate CVV length here, etc.)
 
-        # 3) Proceed with booking
         conn = get_connection(); cur = conn.cursor()
         booking_id = uuid.uuid4().hex[:10]
         cur.execute("SELECT RenterID FROM Renter WHERE Email = %s",
@@ -544,11 +667,9 @@ def add_page():
         conn=get_connection(); cur=conn.cursor()
         cur.execute("SELECT MAX(CAST(PropId AS bigint)) FROM Property")
         max_id=cur.fetchone()[0] or 0; prop_id=str(int(max_id)+1).zfill(10)
-        # inside add_page(), before inserting into Property
         cur.execute("SELECT AgentID FROM Agent WHERE Email = %s",
                     (st.session_state.email,))
         agent_id = cur.fetchone()[0]
-        # now include AgentID in the insert:
         cur.execute(
             "INSERT INTO Property(PropId, PropType, Description, City, State_, AgentID) "
             "VALUES (%s,%s,%s,%s,%s,%s)",
@@ -563,7 +684,6 @@ def add_page():
         conn.commit();cur.close();conn.close();st.success(f"Added property {prop_id} with neighbourhood info")
         st.session_state.page='view';st.rerun()
 
-# ——— Router ———
 def main():
     if 'page' not in st.session_state: st.session_state.page='signup'
     if st.session_state.page=='signup': signup_page()
