@@ -35,7 +35,7 @@ def signup_page():
     job_title = ""
     if role == 'Agent':
         agency    = st.text_input('Agency')
-        job_title = st.selectbox('Job Title', ['Manager', 'Agent'])
+        job_title = st.text_input('Job Title')
 
     col1, col2 = st.columns(2)
     with col1:
